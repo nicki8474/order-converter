@@ -7,7 +7,7 @@ import json
 import re
 
 st.set_page_config(page_title="訂單智慧對轉工具", layout="centered")
-st.title("🚀 訂單智慧對轉工具 (終極容錯版)")
+st.title("🚀 訂單智慧對轉工具 (終極精準版)")
 
 with st.sidebar:
     st.header("1. 系統設定")
@@ -60,10 +60,10 @@ if uploaded_file and df_db is not None and api_key:
                 model = genai.GenerativeModel(model_name=target_model)
 
                 prompt = """你是一個訂單處理員。請從圖片提取：
-                1. 產品名稱 (如: 烏龍, 淨透潤, 白露) -> 只要提取最核心的兩個字即可
-                2. 度數 (如: 4.50, 5.50)
+                1. 產品名稱 (如: 烏龍, 淨透潤, 白露, 紅韻, 伯爵)
+                2. 度數 (請確保數字正確)
                 3. 數量
-                輸出 JSON 陣列：[{"key": "核心字", "degree": "度數", "qty": 數量}]"""
+                輸出 JSON 陣列：[{"key": "名稱", "degree": "度數", "qty": 數量}]"""
                 
                 response = model.generate_content([prompt, img])
                 json_str = re.sub(r'```json|```', '', response.text).strip()
@@ -76,29 +76,35 @@ if uploaded_file and df_db is not None and api_key:
                 
                 if name_col:
                     for item in items:
-                        # --- 核心邏輯升級 ---
-                        search_key = str(item['key']).replace('日彩', '').replace(' ', '').strip()
-                        # 處理度數的多種可能 (4.5 -> 4.50)
+                        # --- 強化搜尋邏輯 ---
+                        # 1. 品名關鍵字 (例如: 淨透潤)
+                        raw_key = str(item['key']).strip()
+                        # 2. 產生成多種度數可能的字串格式
                         try:
                             d_float = float(item['degree'])
-                            d_variants = [f"{d_float:.2f}", f"{d_float:.1f}", str(int(d_float)) if d_float.is_integer() else str(d_float)]
+                            # 生成如: "4.50", "4.5", "450" (針對 4.50)
+                            d_list = [
+                                f"{d_float:.2f}", 
+                                f"{d_float:.1f}", 
+                                str(int(d_float * 100)) if d_float < 10 else str(int(d_float)),
+                                str(int(d_float)) if d_float.is_integer() else str(d_float)
+                            ]
                         except:
-                            d_variants = [str(item['degree'])]
+                            d_list = [str(item['degree'])]
 
-                        # 模糊比對：只要品名裡有出現產品關鍵字「且」有出現度數
-                        # 我們讓搜尋條件變寬鬆：只要包含關鍵字中的「任兩個字」
-                        match = df_db[
-                            (df_db[name_col].astype(str).str.contains(search_key[:2], na=False, case=False)) & 
-                            (df_db[name_col].astype(str).apply(lambda x: any(v in x for v in d_variants)))
-                        ]
+                        # 3. 執行過濾：品名必須包含「產品名」關鍵字
+                        # 且品名內容必須包含 d_list 其中的任一格式
+                        mask = (df_db[name_col].astype(str).str.contains(raw_key, na=False, case=False)) & \
+                               (df_db[name_col].astype(str).apply(lambda x: any(v in x for v in d_list)))
+                        
+                        match = df_db[mask]
                         
                         if not match.empty:
-                            # 如果有多筆，選字數最接近的（通常是最準確的）
                             res_row = match.iloc[0].to_dict()
                             res_row['訂購數量'] = item['qty']
                             final_results.append(res_row)
                         else:
-                            st.warning(f"❌ 找不到：{search_key} 度數 {item['degree']}")
+                            st.warning(f"❌ 找不到：{raw_key} 度數 {item['degree']} (嘗試過的格式: {d_list})")
                 
                 if final_results:
                     res_df = pd.DataFrame(final_results)
