@@ -45,8 +45,8 @@ if uploaded_file and uploaded_db and api_key:
         with st.spinner("AI 正在辨識並匹配總表貨號..."):
             try:
                 # 配置 AI
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                genai.configure(api_key=api_key, transport='rest')
+model = genai.GenerativeModel(model_name="models/gemini-1.5-flash-latest")
                 
                 # 圖片辨識
                 prompt = """
