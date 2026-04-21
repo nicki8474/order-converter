@@ -18,27 +18,34 @@ uploaded_db = st.file_uploader("請上傳您的「產品總表.xlsx」", type=["
 df_db = None
 if uploaded_db:
     try:
-        # 讀取檔案
+        # 讀取檔案，先不設標題
         if uploaded_db.name.endswith('.csv'):
             temp_df = pd.read_csv(uploaded_db, header=None)
         else:
             temp_df = pd.read_excel(uploaded_db, header=None)
         
-        # 【修正：自動尋找正確的標題列】
+        # 【修正：更強大的標題列搜尋，自動跳過非字串內容】
         header_row_index = 0
+        found_header = False
         for i, row in temp_df.iterrows():
-            row_str = row.astype(str).values
-            if any("品名" in s for s in row_str) or any("貨號" in s for s in row_str):
+            # 將整列轉為字串並過濾掉 'nan'
+            row_values = [str(val) for val in row.values if pd.notna(val)]
+            if any("品名" in s for s in row_values) or any("貨號" in s for s in row_values):
                 header_row_index = i
+                found_header = True
                 break
         
-        # 重新設定正確的標題
-        df_db = temp_df.iloc[header_row_index:].copy()
-        df_db.columns = df_db.iloc[0]
-        df_db = df_db[1:].reset_index(drop=True)
-        df_db.columns = df_db.columns.str.strip() # 去除空白
-        
-        st.success(f"成功載入！偵測到標題欄位：{', '.join(df_db.columns.astype(str))}")
+        if found_header:
+            # 重新設定標題
+            df_db = temp_df.iloc[header_row_index:].copy()
+            df_db.columns = df_db.iloc[0]
+            df_db = df_db[1:].reset_index(drop=True)
+            # 去除標題前後空格並過濾掉空欄位
+            df_db.columns = [str(c).strip() if pd.notna(c) else f"Unnamed_{i}" for i, c in enumerate(df_db.columns)]
+            st.success(f"成功載入！偵測到欄位：{', '.join([c for c in df_db.columns if 'Unnamed' not in c])}")
+        else:
+            st.error("在檔案中找不到包含「品名」或「貨號」的標題列，請檢查 Excel 格式。")
+
     except Exception as e:
         st.error(f"讀取總表失敗：{e}")
 
@@ -66,12 +73,12 @@ if uploaded_file and df_db is not None and api_key:
                 items = json.loads(raw_text)
                 
                 final_results = []
-                for item in items:
-                    # 智慧搜尋：不分大小寫，且同時包含品名關鍵字與度數
-                    # 這裡自動偵測欄位名稱，防止又是 KeyError
-                    name_col = next((c for c in df_db.columns if "品名" in str(c)), None)
-                    
-                    if name_col:
+                # 找出正確的品名欄位名稱
+                name_col = next((c for c in df_db.columns if "品名" in str(c)), None)
+                
+                if name_col:
+                    for item in items:
+                        # 在品名欄位搜尋關鍵字與度數
                         match = df_db[
                             (df_db[name_col].astype(str).str.contains(str(item['key']), na=False)) & 
                             (df_db[name_col].astype(str).str.contains(str(item['degree']), na=False))
@@ -92,6 +99,6 @@ if uploaded_file and df_db is not None and api_key:
                         res_df.to_excel(writer, index=False)
                     st.download_button(label="📥 下載轉單 Excel", data=output.getvalue(), file_name="訂單結果.xlsx")
                 else:
-                    st.error("總表中找不到對應產品。")
+                    st.error("總表中找不到對應產品，請確認圖片文字與總表內容是否相符。")
             except Exception as e:
                 st.error(f"執行出錯：{e}")
