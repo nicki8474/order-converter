@@ -6,11 +6,9 @@ import io
 import json
 import re
 
-# 1. 網頁基本設定
 st.set_page_config(page_title="訂單智慧對轉工具", layout="centered")
 st.title("📦 訂單智慧對轉工具")
 
-# --- 側邊欄設定 (隱藏 API Key 顯示) ---
 with st.sidebar:
     st.header("1. 系統設定")
     if "GEMINI_API_KEY" in st.secrets:
@@ -19,7 +17,6 @@ with st.sidebar:
     else:
         api_key = st.text_input("輸入 Gemini API Key", type="password")
 
-# --- 2. 產品總表上傳 ---
 st.header("2. 載入資料庫")
 uploaded_db = st.file_uploader("第一步：請上傳「產品總表」", type=["xlsx", "csv"])
 
@@ -30,14 +27,12 @@ if uploaded_db:
             temp_df = pd.read_csv(uploaded_db, header=None, encoding_errors='ignore', dtype=str)
         else:
             temp_df = pd.read_excel(uploaded_db, header=None, dtype=str)
-        
         header_row_index = 0
         for i, row in temp_df.iterrows():
             row_content = "".join([str(x) for x in row.fillna("").values])
             if "品名" in row_content:
                 header_row_index = i
                 break
-        
         df_db = temp_df.iloc[header_row_index:].copy()
         df_db.columns = df_db.iloc[0]
         df_db = df_db[1:].reset_index(drop=True)
@@ -46,7 +41,6 @@ if uploaded_db:
     except Exception as e:
         st.error(f"讀取總表失敗：{e}")
 
-# --- 3. 圖片上傳與辨識 ---
 st.header("3. 上傳訂單圖片")
 uploaded_file = st.file_uploader("第二步：請上傳照片", type=["jpg", "jpeg", "png"])
 
@@ -58,19 +52,17 @@ if uploaded_file and df_db is not None and api_key:
         with st.spinner("AI 辨識中..."):
             try:
                 genai.configure(api_key=api_key)
-                # 自動偵測模型
                 models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 target_model = next((m for m in models if 'flash' in m), models[0])
                 model = genai.GenerativeModel(model_name=target_model)
 
-                prompt = """提取訂單：產品名核心字、度數(數字)、數量。
-                450 視為 4.50。只需輸出 JSON 陣列。"""
+                prompt = "提取訂單 JSON：[{\"key\": \"名稱\", \"degree\": \"數字\", \"qty\": 數量}]。450視為4.50。只需輸出JSON。"
                 
                 response = model.generate_content([prompt, img])
                 json_str = re.sub(r'```json|```', '', response.text).strip()
                 items = json.loads(json_str)
                 
-                # --- 這裡已經徹底刪除 st.write 偵錯行 ---
+                # --- 此處絕無 st.write ---
                 
                 final_results = []
                 for item in items:
@@ -84,13 +76,11 @@ if uploaded_file and df_db is not None and api_key:
                         d_search = str(item['degree'])
                         d_search_alt = d_search
 
-                    # 全方位掃描：檢查整行文字
                     def row_match(row):
                         full_text = "".join(row.fillna("").astype(str))
                         return key in full_text and (d_search in full_text or d_search_alt in full_text)
 
                     matched_rows = df_db[df_db.apply(row_match, axis=1)]
-                    
                     if not matched_rows.empty:
                         res_row = matched_rows.iloc[0].to_dict()
                         res_row['訂購數量'] = item['qty']
@@ -99,15 +89,12 @@ if uploaded_file and df_db is not None and api_key:
                 if final_results:
                     res_df = pd.DataFrame(final_results)
                     st.subheader("✅ 轉換結果")
-                    # 使用 table 顯示更整潔
                     st.table(res_df)
-                    
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         res_df.to_excel(writer, index=False)
                     st.download_button(label="📥 下載轉單 Excel", data=output.getvalue(), file_name="訂單結果.xlsx")
                 else:
-                    st.warning("⚠️ 找不到對應產品，請確認圖片文字與總表內容是否相符。")
-                
+                    st.warning("⚠️ 找不到對應產品。")
             except Exception as e:
                 st.error(f"出錯了：{e}")
