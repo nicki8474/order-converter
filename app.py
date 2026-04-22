@@ -9,16 +9,18 @@ import re
 st.set_page_config(page_title="訂單智慧對轉工具", layout="centered")
 st.title("📦 訂單智慧對轉工具")
 
+# --- 安全讀取 Key ---
+api_key = st.secrets.get("GEMINI_API_KEY", "")
+
 with st.sidebar:
     st.header("1. 系統設定")
-    if "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
+    if api_key:
         st.success("✅ 系統已就緒")
     else:
         api_key = st.text_input("輸入 Gemini API Key", type="password")
 
 st.header("2. 載入資料庫")
-uploaded_db = st.file_uploader("第一步：請上傳「產品總表」", type=["xlsx", "csv"])
+uploaded_db = st.file_uploader("第一步：上傳產品總表", type=["xlsx", "csv"])
 
 df_db = None
 if uploaded_db:
@@ -39,10 +41,10 @@ if uploaded_db:
         df_db.columns = [str(c).strip() for c in df_db.columns]
         st.success("✅ 總表載入成功")
     except Exception as e:
-        st.error(f"讀取總表失敗：{e}")
+        st.error(f"讀取失敗：{e}")
 
 st.header("3. 上傳訂單圖片")
-uploaded_file = st.file_uploader("第二步：請上傳照片", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("第二步：上傳訂單照片", type=["jpg", "jpeg", "png"])
 
 if uploaded_file and df_db is not None and api_key:
     img = Image.open(uploaded_file)
@@ -52,17 +54,15 @@ if uploaded_file and df_db is not None and api_key:
         with st.spinner("AI 辨識中..."):
             try:
                 genai.configure(api_key=api_key)
-                models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                target_model = next((m for m in models if 'flash' in m), models[0])
-                model = genai.GenerativeModel(model_name=target_model)
+                model = genai.GenerativeModel("gemini-1.5-flash") # 固定模型名稱減少錯誤
 
-                prompt = "提取訂單 JSON：[{\"key\": \"名稱\", \"degree\": \"數字\", \"qty\": 數量}]。450視為4.50。只需輸出JSON。"
+                prompt = "提取訂單：產品名核心字、度數(數字)、數量。只需輸出 JSON 陣列，不需任何解釋。"
                 
                 response = model.generate_content([prompt, img])
                 json_str = re.sub(r'```json|```', '', response.text).strip()
                 items = json.loads(json_str)
                 
-                # --- 此處絕無 st.write ---
+                # --- 這裡絕對沒有 st.write(items) ---
                 
                 final_results = []
                 for item in items:
@@ -93,8 +93,12 @@ if uploaded_file and df_db is not None and api_key:
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         res_df.to_excel(writer, index=False)
-                    st.download_button(label="📥 下載轉單 Excel", data=output.getvalue(), file_name="訂單結果.xlsx")
+                    st.download_button(label="📥 下載轉單 Excel", data=output.getvalue(), file_name="結果.xlsx")
                 else:
-                    st.warning("⚠️ 找不到對應產品。")
+                    st.warning("⚠️ 找不到對應產品，請確認總表內容。")
+
             except Exception as e:
-                st.error(f"出錯了：{e}")
+                if "429" in str(e):
+                    st.error("❌ 今日免費額度(20次)已用完！請明天再試，或更換 API Key。")
+                else:
+                    st.error(f"出錯了：{e}")
