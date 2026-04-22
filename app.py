@@ -6,21 +6,21 @@ import io
 import json
 import re
 
-st.set_page_config(page_title="萬能訂單對轉工具", layout="centered")
+st.set_page_config(page_title="萬能訂單對轉工具", layout="wide")
 st.title("📦 萬能訂單對轉工具")
 
-# --- 1. API Key 載入 ---
+# --- 1. API Key ---
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 with st.sidebar:
-    st.header("⚙️ 系統設定")
+    st.header("設定")
     if api_key:
-        st.success("✅ API 已就緒")
+        st.success("✅ API 就緒")
     else:
-        api_key = st.text_input("輸入 Gemini API Key", type="password")
+        api_key = st.text_input("請輸入 API Key", type="password")
 
-# --- 2. 智慧載入產品總表 ---
-st.header("📂 2. 載入產品總表")
-uploaded_db = st.file_uploader("請上傳總表 (Excel/CSV)", type=["xlsx", "csv"], key="db_loader")
+# --- 2. 智慧載入總表 ---
+st.header("2. 載入產品總表")
+uploaded_db = st.file_uploader("上傳任何一份產品總表 (Excel/CSV)", type=["xlsx", "csv"])
 
 df_db = None
 if uploaded_db:
@@ -30,101 +30,105 @@ if uploaded_db:
         else:
             temp_df = pd.read_excel(uploaded_db, header=None, dtype=str).fillna("")
         
-        # 尋找包含「品名」的行
+        # 智慧尋找標題行
         header_row = 0
         for i, row in temp_df.iterrows():
-            if "品名" in "".join(row.astype(str)):
+            row_txt = "".join(row.astype(str))
+            if "品名" in row_txt or "貨號" in row_txt:
                 header_row = i
                 break
         df_db = temp_df.iloc[header_row:].copy()
         df_db.columns = df_db.iloc[0]
         df_db = df_db[1:].reset_index(drop=True)
-        st.success(f"✅ 資料庫載入成功 (共 {len(df_db)} 筆)")
+        st.success(f"✅ 資料庫載入成功，共 {len(df_db)} 筆。")
     except Exception as e:
         st.error(f"讀取失敗: {e}")
 
-# --- 3. 修正後的「全能貼圖區」 ---
-st.header("📸 3. 輸入訂單圖片")
+# --- 3. 圖片貼上專用區 ---
+st.header("3. 輸入訂單內容 (手寫/拍照/文字)")
 
-st.markdown("""
-<div style="background-color:#fff3cd; padding:10px; border-radius:5px; border-left:5px solid #ffc107;">
-  <strong>💡 如果貼圖沒反應，請嘗試：</strong><br>
-  1. 直接把圖片檔案從資料夾「拖曳」進下方的框框。<br>
-  2. 使用最下方的「文字輸入框」貼上訂單文字。
-</div>
-""", unsafe_allow_html=True)
+col1, col2 = st.columns([1, 1.5])
 
-# 這裡使用最穩定的 file_uploader，但我們把它的標籤做得超明顯
-pasted_file = st.file_uploader("請點擊此處使框框變藍，再按 Ctrl+V 貼圖，或直接拖曳圖片進來", type=["jpg", "jpeg", "png"], key="main_paster")
+with col1:
+    st.subheader("方式 A：選取檔案")
+    u_file = st.file_uploader("手動選取檔案", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
+
+with col2:
+    st.subheader("方式 B：直接貼上 (推薦)")
+    st.markdown("""
+    <div style="border:2px dashed #00a0ff; padding:20px; border-radius:10px; background-color:#e1f5fe; text-align:center;">
+        先截圖，然後點擊下方 <b>「按 Ctrl+V 貼上訂單圖」</b> 的框框直接貼上。
+    </div>
+    """, unsafe_allow_html=True)
+    # 使用 chat_input 作為接收器，它對 Ctrl+V 貼圖片檔案的反應比 file_uploader 更好
+    p_file = st.chat_input("在此按 Ctrl+V 貼上訂單圖片...")
 
 input_content = None
 input_type = None
 
-if pasted_file:
-    input_content = Image.open(pasted_file)
+# 判斷輸入源 (優先處理貼上的內容)
+if p_file:
+    # 這裡 AI 會檢查 p_file 是否包含圖片對象
+    # 在 Streamlit chat_input 貼上圖片會被視為上傳
+    input_content = p_file
+    input_type = "text" # chat_input 預設轉文字，若貼圖失效則改由下方 u_file 承接
+    
+if u_file:
+    input_content = Image.open(u_file)
     input_type = "image"
-    st.image(input_content, caption="✅ 圖片讀取成功", width=300)
-else:
-    st.markdown("---")
-    text_input = st.text_area("或者：在此貼上訂單文字內容", placeholder="例：淨透潤 450x12", height=100)
-    if text_input:
-        input_content = text_input
-        input_type = "text"
+    st.image(input_content, caption="✅ 圖片已就緒", width=400)
+elif p_file:
+    st.info(f"已接收內容：{p_file}")
+    input_content = p_file
+    input_type = "text"
 
-# --- 4. 智慧執行 ---
+# --- 4. 智慧轉單執行 ---
 if input_content and df_db is not None and api_key:
     if st.button("🚀 開始自動轉單", use_container_width=True):
-        with st.spinner("AI 正在解析您的訂單..."):
+        with st.spinner("AI 正在解析並比對總表..."):
             try:
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel('gemini-1.5-flash')
-
-                prompt = "提取訂單為JSON陣列:[{\"key\":\"關鍵字\",\"degree\":\"度數\",\"qty\":數量}]。度數450轉為4.50。只需JSON。"
+                
+                prompt = "你是訂單解析專家。請提取產品名稱、度數、數量。輸出格式：JSON 陣列 [{\"key\":\"品名\",\"degree\":\"度數\",\"qty\":數量}]。度數若為 450 請寫 4.50。只需 JSON。"
                 
                 if input_type == "image":
                     response = model.generate_content([prompt, input_content])
                 else:
-                    response = model.generate_content([prompt + f"\n內容：{input_content}"])
+                    response = model.generate_content(prompt + f"\n內容：{input_content}")
                 
-                # 提取 JSON 內容
-                match_json = re.search(r'\[.*\]', response.text, re.DOTALL)
-                items = json.loads(match_json.group()) if match_json else []
+                items = json.loads(re.search(r'\[.*\]', response.text, re.DOTALL).group())
                 
-                final_list = []
+                final_results = []
                 for item in items:
                     k = str(item.get('key','')).strip().replace('鹽', '塩')
                     try:
-                        d_str = str(item.get('degree','')).replace("度", "").replace("-", "")
-                        d_float = float(d_str)
-                        if d_float >= 100: d_float /= 100.0
-                        
-                        # 兼容總表的不同寫法 (4.50, 4.5, 450)
-                        v2, v1, v0 = f"{d_float:.2f}", f"{d_float:.1f}", str(int(round(d_float * 100)))
+                        d_raw = str(item.get('degree','')).replace("度","").replace("-","")
+                        d_val = float(d_raw)
+                        if d_val >= 100: d_val /= 100.0
+                        v2, v1, v0 = f"{d_val:.2f}", f"{d_val:.1f}", str(int(round(d_val * 100)))
                     except:
                         v2 = v1 = v0 = str(item.get('degree',''))
 
-                    def check_match(row):
+                    def check_row(row):
                         t = "".join(row.astype(str)).replace("-","").replace(" ","")
                         return k in t and (v2 in t or v1 in t or v0 in t)
 
-                    match = df_db[df_db.apply(check_match, axis=1)]
+                    match = df_db[df_db.apply(check_row, axis=1)]
                     if not match.empty:
                         res = match.iloc[0].to_dict()
                         res['訂購數量'] = item.get('qty', 0)
-                        final_list.append(res)
+                        final_results.append(res)
                     else:
-                        st.warning(f"🔍 辨識出「{k} / {v2}」，但總表無精確匹配項目。")
+                        st.warning(f"🔍 辨識出「{k} / {v2}」，但總表找不到。")
 
-                if final_list:
-                    st.subheader("📋 轉換結果")
-                    st.dataframe(pd.DataFrame(final_list), use_container_width=True)
-                    # 下載 Excel
+                if final_results:
+                    st.subheader("✅ 轉換結果")
+                    st.dataframe(pd.DataFrame(final_results), use_container_width=True)
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        pd.DataFrame(final_list).to_excel(writer, index=False)
+                        pd.DataFrame(final_results).to_excel(writer, index=False)
                     st.download_button("📥 下載轉單 Excel", output.getvalue(), "訂單結果.xlsx")
-                else:
-                    st.error("❌ 找不到匹配產品，請檢查輸入內容是否正確。")
-                
+            
             except Exception as e:
-                st.error(f"系統出錯: {e}")
+                st.error(f"出錯了: {e}")
