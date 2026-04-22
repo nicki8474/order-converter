@@ -8,34 +8,29 @@ import re
 
 # 1. 網頁基本設定
 st.set_page_config(page_title="訂單智慧對轉工具", layout="centered")
-st.title("🚀 訂單智慧對轉工具 (Secrets 安全版)")
+st.title("📦 訂單智慧對轉工具")
 
-# --- 側邊欄設定 (從系統環境變數讀取 Key) ---
+# --- 側邊欄設定 (從保險箱讀取 Key) ---
 with st.sidebar:
     st.header("1. 系統設定")
-    # 優先從 Streamlit Secrets 讀取
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
-        st.success("✅ 已從後台安全載入 API Key")
+        st.success("✅ 系統已就緒")
     else:
-        # 如果後台沒設定，才顯示輸入框
         api_key = st.text_input("輸入 Gemini API Key", type="password")
-        st.info("💡 提示：管理員可將 Key 設定在 Secrets 中以隱藏此框")
 
 # --- 2. 產品總表上傳 ---
 st.header("2. 載入資料庫")
-uploaded_db = st.file_uploader("請上傳您的「產品總表.xlsx」", type=["xlsx", "csv"])
+uploaded_db = st.file_uploader("第一步：請上傳「產品總表」", type=["xlsx", "csv"])
 
 df_db = None
 if uploaded_db:
     try:
-        # 強制讀取所有內容為字串
         if uploaded_db.name.endswith('.csv'):
             temp_df = pd.read_csv(uploaded_db, header=None, encoding_errors='ignore', dtype=str)
         else:
             temp_df = pd.read_excel(uploaded_db, header=None, dtype=str)
         
-        # 尋找包含「品名」的那一行作為標題
         header_row_index = 0
         for i, row in temp_df.iterrows():
             row_content = "".join([str(x) for x in row.fillna("").values])
@@ -47,35 +42,34 @@ if uploaded_db:
         df_db.columns = df_db.iloc[0]
         df_db = df_db[1:].reset_index(drop=True)
         df_db.columns = [str(c).strip() for c in df_db.columns]
-        st.success(f"總表載入成功！搜尋欄位：{', '.join(df_db.columns)}")
+        st.success("✅ 總表載入成功")
     except Exception as e:
         st.error(f"讀取總表失敗：{e}")
 
 # --- 3. 圖片上傳與辨識 ---
 st.header("3. 上傳訂單圖片")
-uploaded_file = st.file_uploader("請上傳照片", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("第二步：請上傳照片", type=["jpg", "jpeg", "png"])
 
 if uploaded_file and df_db is not None and api_key:
     img = Image.open(uploaded_file)
     st.image(img, caption="上傳的訂單", width=400)
     
-    if st.button("🚀 開始精準比對"):
-        with st.spinner("正在執行全方位比對..."):
+    if st.button("🚀 開始自動轉單"):
+        with st.spinner("AI 辨識中..."):
             try:
                 genai.configure(api_key=api_key)
                 models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 target_model = next((m for m in models if 'flash' in m), models[0])
                 model = genai.GenerativeModel(model_name=target_model)
 
-                prompt = """提取訂單 JSON：[{"key": "名稱", "degree": "數字", "qty": 數量}]
-                注意：淨透潤, 烏龍, 白露, 紅韻, 伯爵 等核心字。
-                450 視為 4.50。只需輸出純 JSON。"""
+                prompt = """提取訂單：產品名核心字、度數(數字)、數量。
+                450 視為 4.50。只需輸出 JSON 陣列。"""
                 
                 response = model.generate_content([prompt, img])
                 json_str = re.sub(r'```json|```', '', response.text).strip()
                 items = json.loads(json_str)
                 
-                st.write("🔍 AI 提取：", items)
+                # --- 已移除 st.write(items) 讓畫面更乾淨 ---
                 
                 final_results = []
                 for item in items:
@@ -89,7 +83,6 @@ if uploaded_file and df_db is not None and api_key:
                         d_search = str(item['degree'])
                         d_search_alt = d_search
 
-                    # 全方位掃描：檢查整行文字
                     def row_match(row):
                         full_text = "".join(row.fillna("").astype(str))
                         return key in full_text and (d_search in full_text or d_search_alt in full_text)
@@ -100,17 +93,18 @@ if uploaded_file and df_db is not None and api_key:
                         res_row = matched_rows.iloc[0].to_dict()
                         res_row['訂購數量'] = item['qty']
                         final_results.append(res_row)
-                    else:
-                        st.warning(f"⚠️ 找不到：{key} 度數 {d_search}")
                 
                 if final_results:
                     res_df = pd.DataFrame(final_results)
-                    st.subheader("✅ 轉換成果")
+                    st.subheader("✅ 轉換結果")
                     st.table(res_df)
+                    
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                         res_df.to_excel(writer, index=False)
-                    st.download_button(label="📥 下載 Excel", data=output.getvalue(), file_name="對轉結果.xlsx")
+                    st.download_button(label="📥 下載轉單 Excel", data=output.getvalue(), file_name="訂單結果.xlsx")
+                else:
+                    st.warning("找不到對應產品，請確認圖片文字與總表內容是否相符。")
                 
             except Exception as e:
                 st.error(f"出錯了：{e}")
