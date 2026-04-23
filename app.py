@@ -7,15 +7,15 @@ import json
 import re
 
 st.set_page_config(page_title="極速智慧轉單", layout="wide")
-st.title("⚡ 極速智慧對轉工具")
+st.title("⚡ 極速智慧對轉工具 (修正 404 版)")
 
 # --- 1. API Key ---
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 if not api_key:
     api_key = st.sidebar.text_input("輸入 API Key", type="password")
 
-# --- 2. 智慧載入總表 (優化讀取速度) ---
-@st.cache_data # 使用快取，上傳一次後就不再重複計算
+# --- 2. 智慧載入總表 (快取機制，提升速度) ---
+@st.cache_data
 def process_db(file):
     if file.name.endswith('.csv'):
         df = pd.read_csv(file, header=None, dtype=str).fillna("")
@@ -37,14 +37,13 @@ product_hint = ""
 
 if uploaded_db:
     df_db = process_db(uploaded_db)
-    # 只提取獨特的產品關鍵字（縮短長度，加速 AI 回應）
+    # 提取品名關鍵字 (加速 AI 校正速度)
     unique_names = set()
     for name in df_db.iloc[:, 1].astype(str):
-        # 簡單過濾掉度數，留下品牌/系列名
         clean_n = re.sub(r'[\d\.\-]+', '', name).strip()
         if len(clean_n) > 1: unique_names.add(clean_n[:10]) 
-    product_hint = ", ".join(list(unique_names)[:80]) # 限制在 80 個詞以內
-    st.success(f"✅ 總表已就緒")
+    product_hint = ", ".join(list(unique_names)[:80])
+    st.success(f"✅ 總表已載入")
 
 # --- 3. 雙軌輸入 ---
 col1, col2 = st.columns(2)
@@ -53,27 +52,33 @@ with col1:
 with col2:
     text_input = st.text_area("✍️ 文字 (直接貼上)", height=150)
 
-# --- 4. 極速辨識邏輯 ---
+# --- 4. 執行辨識 ---
 if (img_file or text_input) and df_db is not None and api_key:
     if st.button("🚀 開始極速轉單", use_container_width=True):
-        with st.spinner("AI 快速辨識中..."):
+        with st.spinner("正在自動尋找可用模型並辨識中..."):
             try:
                 genai.configure(api_key=api_key)
-                # 直接鎖定 flash 模型，不再列出所有模型 (省去一次 API 呼叫)
-                model = genai.GenerativeModel('gemini-1.5-flash')
+                
+                # --- 【關鍵修正】動態獲取模型名稱，避免 404 ---
+                model_list = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                # 優先尋找名稱中包含 'flash' 的最新模型
+                target_model_name = next((m for m in model_list if 'flash' in m), model_list[0])
+                model = genai.GenerativeModel(model_name=target_model_name)
+                # ---------------------------------------------
 
-                # 極簡 Prompt：只給任務，不給廢話
                 prompt = f"""
-                你是訂單助手。參考品名：[{product_hint}]
-                從內容提取 JSON 陣列：[{{"key":"品名","degree":"度數","qty":數量}}]
+                你是訂單解析專家。參考品名：[{product_hint}]
+                請提取 JSON 陣列，格式如範例：[{{"key":"品名","degree":"度數","qty":數量}}]
+                如果手寫模糊（如可泳棟），請修正為最接近的品名（如可沐棕）。
                 450度需轉為4.50。只需輸出 JSON。
                 """
                 
                 content = Image.open(img_file) if img_file else text_input
                 response = model.generate_content([prompt, content] if img_file else prompt + f"\n{content}")
                 
-                # 快速解析 JSON
-                items = json.loads(re.search(r'\[.*\]', response.text, re.DOTALL).group())
+                # 快速解析結果
+                json_str = re.search(r'\[.*\]', response.text, re.DOTALL).group()
+                items = json.loads(json_str)
                 
                 final_res = []
                 for item in items:
@@ -85,7 +90,6 @@ if (img_file or text_input) and df_db is not None and api_key:
                     except:
                         vs = [str(item.get('degree',''))]
 
-                    # 向量化比對提升速度
                     mask = df_db.apply(lambda r: k in "".join(r.astype(str)) and any(v in "".join(r.astype(str)) for v in vs), axis=1)
                     match = df_db[mask]
                     
@@ -97,7 +101,12 @@ if (img_file or text_input) and df_db is not None and api_key:
                         st.warning(f"🔍 辨識為「{k} / {vs[0]}」，但總表找不到")
 
                 if final_res:
+                    st.subheader("✅ 轉換結果")
                     st.dataframe(pd.DataFrame(final_res), use_container_width=True)
-                    # 下載 Excel... (維持原樣)
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                        pd.DataFrame(final_res).to_excel(writer, index=False)
+                    st.download_button("📥 下載 Excel", output.getvalue(), "訂單.xlsx")
+                
             except Exception as e:
-                st.error(f"錯誤: {e}")
+                st.error(f"系統錯誤: {e}")
