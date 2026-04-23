@@ -15,35 +15,55 @@ with st.sidebar:
     st.header("⚙️ 設定")
     api_key = st.text_input("輸入 API Key", value=api_key, type="password")
 
-# --- 2. 總表載入 (快取) ---
-@st.cache_data
+# --- 2. 總表載入 (加入更強的偵測) ---
+@st.cache_data(show_spinner=False)
 def load_db(file):
     try:
-        df = pd.read_excel(file, header=None, dtype=str) if file.name.endswith('xlsx') else pd.read_csv(file, header=None, dtype=str)
-        h_row = 0
+        # 根據副檔名讀取
+        if file.name.endswith('.csv'):
+            df = pd.read_csv(file, header=None, dtype=str).fillna("")
+        else:
+            df = pd.read_excel(file, header=None, dtype=str).fillna("")
+        
+        # 尋找包含「品名」的行
+        h_row = -1
         for i, row in df.iterrows():
             if "品名" in "".join(row.astype(str)):
                 h_row = i
                 break
+        
+        if h_row == -1: # 如果找不到品名關鍵字，就預設第一行為標題
+            df_clean = df.copy()
+            df_clean.columns = df_clean.iloc[0]
+            return df_clean[1:].reset_index(drop=True)
+            
         df_clean = df.iloc[h_row:].copy()
         df_clean.columns = df_clean.iloc[0]
         return df_clean[1:].reset_index(drop=True)
-    except:
+    except Exception as e:
+        st.error(f"解析總表時出錯: {e}")
         return None
 
 uploaded_db = st.file_uploader("📂 1. 載入產品總表", type=["xlsx", "csv"])
+
+# 初始化資料庫變數
 df_db = None
 product_hint = ""
 
-if uploaded_db:
+# 只要有上傳動作，就立刻處理
+if uploaded_db is not None:
     df_db = load_db(uploaded_db)
     if df_db is not None:
-        unique_names = set()
-        for name in df_db.iloc[:, 1].astype(str):
-            clean_n = re.sub(r'[\d\.\-]+', '', name).strip()
-            if len(clean_n) > 1: unique_names.add(clean_n[:10]) 
-        product_hint = ", ".join(list(unique_names)[:80])
-        st.success("✅ 總表載入成功")
+        st.success(f"✅ 總表載入成功 (共 {len(df_db)} 筆資料)")
+        # 提取參考品名
+        try:
+            unique_names = set()
+            for name in df_db.iloc[:, 1].astype(str):
+                clean_n = re.sub(r'[\d\.\-]+', '', name).strip()
+                if len(clean_n) > 1: unique_names.add(clean_n[:10]) 
+            product_hint = ", ".join(list(unique_names)[:80])
+        except:
+            product_hint = ""
 
 # --- 3. 輸入內容 ---
 st.header("📝 2. 輸入訂單")
@@ -56,18 +76,17 @@ with col2:
 # --- 4. 執行轉單 ---
 st.markdown("---")
 if st.button("🚀 開始智慧轉單並比對", use_container_width=True):
+    # 這裡的判斷改得更寬鬆一點，確保不會被誤擋
     if not api_key:
-        st.error("❌ 請先輸入 API Key")
-    elif df_db is None:
-        st.error("❌ 請先載入產品總表")
+        st.error("❌ 請輸入 API Key")
+    elif uploaded_db is None or df_db is None:
+        st.error("❌ 請先載入產品總表 (若已上傳請嘗試重新上傳)")
     elif not (img_file or text_input):
         st.warning("⚠️ 請先提供圖片或文字內容")
     else:
         with st.spinner("AI 正在分析中..."):
             try:
                 genai.configure(api_key=api_key)
-                
-                # 自動偵測模型名，確保不因版本異動報 404
                 models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 target = next((m for m in models if 'flash' in m), models[0])
                 model = genai.GenerativeModel(model_name=target)
@@ -91,7 +110,6 @@ if st.button("🚀 開始智慧轉單並比對", use_container_width=True):
                         except: 
                             vs = [str(item.get('degree',''))]
 
-                        # 使用向量化比對提升搜尋速度
                         mask = df_db.apply(lambda r: k in "".join(r.astype(str)) and any(v in "".join(r.astype(str)) for v in vs), axis=1)
                         match = df_db[mask]
                         if not match.empty:
@@ -109,10 +127,10 @@ if st.button("🚀 開始智慧轉單並比對", use_container_width=True):
                             res_df.to_excel(writer, index=False)
                         st.download_button("📥 下載轉單 Excel", output.getvalue(), "訂單結果.xlsx", use_container_width=True)
                     else:
-                        st.warning("查無對應產品")
+                        st.warning("辨識完成，但與總表比對無結果。")
                 
             except Exception as e:
                 if "429" in str(e):
-                    st.error("❌ 系統忙碌中或額度暫時用罄，請稍候 1 分鐘再試。")
+                    st.error("❌ 額度已達上限，請等一分鐘後再試。")
                 else:
                     st.error(f"執行出錯: {e}")
